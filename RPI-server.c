@@ -21,10 +21,12 @@
  */
 #include <stdio.h>
 #include <sys/socket.h>
-#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <unistd.h>
 #include <netdb.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <modbus.h>
 
@@ -32,164 +34,88 @@
  *	Defines
  */
 #define HOST "www.cc.puv.fi"
-#define LOCALHOST "localhost"
-#define PAGE "/"
 #define POST_URL "/~e1201336/JSON/print.php"
 #define PORT 80
-#define USERAGENT "HTMLGET 1.0"
 #define SEND_RQ(MSG) {fprintf(stderr,"%s",MSG); send(sockfd,MSG,strlen(MSG),0);}
+#define LOOP             1
+#define SERVER_ID        1
+#define FOREVER		while(1)
+
 
 /* 
  *	Prototypes
  */
-uint8_t create_tcp_socket();
-uint8_t http_post
-uint8_t http_get();
-char *get_ip(char *host);
-char *build_get_query(char *host, char *page);
+uint8_t http_post(unsigned char *host, unsigned char *url, unsigned char *message);
+uint8_t get_len(void);
+uint8_t mb_send(uint8_t len);
 
 uint8_t main(
 	void
-)	{
+)	{	
+	uint8_t	len = 0;
 	unsigned char *host = HOST;
 	unsigned char *url = POST_URL;
 	unsigned char *message = "{\"time\":237}";
 
+	FOREVER	{	
+		len = get_len();
+		mb_send(len);	
+		http_post(host , url , message);
+	}
 }
 
-uint8_t create_tcp_socket(
+uint8_t mb_send(
+	uint8_t len	
+)	{
+	modbus_t *ctx;
+	uint8_t rc;
+	uint8_t nb_fail;
+	uint8_t addr = 0;
+
+	/* RTU */
+	ctx = modbus_new_rtu("/dev/ttyUSB0", 9600, 'N', 8, 1);
+	modbus_set_slave(ctx, SERVER_ID);
+
+	if (modbus_connect(ctx) == -1) {
+		fprintf(stderr, "Connection failed: %s\n",
+		modbus_strerror(errno));
+		modbus_free(ctx);
+		return -1;
+	}
 	
-)	{
-	uint8_t sock;
-	if((sock == socket(AF_INET, SOCK_STREAM , IPPROTO_TCP)) < 0)	{
-		perror("Can't create TCP socket");	
-		exit(1);
+	nb_fail = 0;
+
+	/* SINGLE REGISTER */
+	rc = modbus_write_register(ctx, addr, len);
+	if (rc != 1) {
+		 printf("ERROR modbus_write_register (%d)\n", rc);
+		 printf("Address = %d, value = %d (0x%X)\n",
+				addr, len, len);
+		 nb_fail++;
 	}
-	return sock;
+
+	 /* Close the connection */
+	 modbus_close(ctx);
+	 modbus_free(ctx);
+
+	if (nb_fail)
+		return 0;
+	else
+		return 1;
 }
 
-char *get_ip(
-	char *host
+uint8_t get_len(
+	void
 )	{
-  struct hostent *hent;
-  uint8_t iplen = 15;
-  char *ip = (char *)malloc(iplen+1);
-  memset(ip, 0, iplen+1);
-  if((hent = gethostbyname(host)) == NULL)
-  {
-    herror("Can't get IP");
-    exit(1);
-  }
-  if(inet_ntop(AF_INET, (void *)hent->h_addr_list[0], ip, iplen) == NULL)
-  {
-    perror("Can't resolve host");
-    exit(1);
-  }
-  return ip;
+	char *len;
+	len = getenv("QUERY_STRING");
+//	printf("%s/r/n",len);
+	return atoi(len);	
 }
 
-#ifdef HTTP_GET
-
-uint8_t http_get(
-
-)	{
-  struct sockaddr_in *remote;
-  uint8_t sock;
-  uint8_t tmpres;
-  char *ip;
-  char *get;
-  char buf[BUFSIZ+1];
-  char *host;
-  char *page;
- 
-  host = LOCALHOST;
-  page = PAGE;
-
-  sock = create_tcp_socket();
-  ip = get_ip(host);
-  remote = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in *));
-  remote->sin_family = AF_INET;
-  tmpres = inet_pton(AF_INET, ip, (void *)(&(remote->sin_addr.s_addr)));
-  
-  if( tmpres < 0)	{
-    perror("Can't set remote->sin_addr.s_addr");
-    exit(1);
-  }else if(tmpres == 0)	{
-    fprintf(stderr, "%s is not a valid IP address\n", ip);
-    exit(1);
-  }
-
-  remote->sin_port = htons(PORT);
- 
-  if(connect(sock, (struct sockaddr *)remote, sizeof(struct sockaddr)) < 0){
-    perror("Could not connect");
-    exit(1);
-  }
-
-  get = build_get_query(host, page);
-  //Send the query to the server
-  uint8_t sent = 0;
-  while(sent < strlen(get))	{
-    tmpres = send(sock, get+sent, strlen(get)-sent, 0);
-    if(tmpres == -1){
-      perror("Can't send query");
-      exit(1);
-    }
-    sent += tmpres;
-  }
-
-  //now it is time to receive the page
-  memset(buf, 0, sizeof(buf));
-  uint8_t htmlstart = 0;
-  char * htmlcontent;
-  while((tmpres = recv(sock, buf, BUFSIZ, 0)) > 0){
-    if(htmlstart == 0)
-    {
-      /* Under certain conditions this will not work.
-      * If the \r\n\r\n part is splitted into two messages
-      * it will fail to detect the beginning of HTML content
-      */
-      htmlcontent = strstr(buf, "\r\n\r\n");
-      if(htmlcontent != NULL){
-        htmlstart = 1;
-        htmlcontent += 4;
-      }
-    }else{
-      htmlcontent = buf;
-    }
-    if(htmlstart){
-      fprintf(stdout, htmlcontent);
-    } 
- 
-    memset(buf, 0, tmpres);
-  }
-  if(tmpres < 0)
-  {
-    perror("Error receiving data");
-  }
-  free(get);
-  free(remote);
-  free(ip);
-  close(sock);
-  return 0;
-}
-
-char *build_get_query(
-	char *host, char *page
-)	{
-	char *query;
-	char *getpage = page;
-	char *tpl = "GET /%s HTTP/1.0\r\nHost: %s\r\nUser-Agent: %s\r\n\r\n";
-	if(getpage[0] == '/'){ getpage = getpage + 1;
-	fprintf(stderr,"Removing leading \"/\", converting %s to %s\n", page, getpage);
-	}
-	// -5 is to consider the %s %s %s in tpl and the ending \0
-	query = (char *)malloc(strlen(host)+strlen(getpage)+strlen(USERAGENT)+strlen(tpl)-5);
-	sprintf(query, tpl, getpage, host, USERAGENT);
-	return query;
-}
-#endif
-uint8_t http_post(unsigned char *host, unsigned char *url, unsigned char *message)  {
+uint8_t http_post(
+	unsigned char *host, unsigned char *url, unsigned char *message
+)  {
 
     unsigned char recbuf[255];
     int sockfd, portno=PORT, n;
